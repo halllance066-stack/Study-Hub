@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Study Hub</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    body { background: #0f1117; color: #f1f5f9; }
+    header {
+      position: sticky; top: 0; z-index: 10;
+      background: #161b26; padding: 14px 20px;
+      display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #262f40;
+    }
+    h1 { font-size: 1.25rem; color: #38bdf8; }
+    .controls { display: flex; gap: 10px; align-items: center; flex: 1; max-width: 650px; }
+    input[type="text"], select {
+      padding: 9px 14px; border-radius: 8px;
+      border: 1px solid #334155; background: #0f1117; color: #fff; font-size: 0.92rem;
+    }
+    input[type="text"] { flex: 1; }
+    #count { font-size: 0.85rem; color: #94a3b8; white-space: nowrap; font-weight: 600; }
+    #status { text-align: center; padding: 40px; color: #94a3b8; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 16px; padding: 20px;
+    }
+    .card {
+      background: #161b26; border: 1px solid #262f40; border-radius: 10px;
+      overflow: hidden; cursor: pointer; transition: transform 0.15s, border-color 0.15s;
+      display: flex; flex-direction: column;
+    }
+    .card:hover { transform: translateY(-3px); border-color: #38bdf8; }
+    .card img {
+      width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #1e2534;
+    }
+    .card-info { padding: 10px; }
+    .card-title { font-size: 0.9rem; font-weight: 600; margin-bottom: 4px; }
+    .card-meta { display: flex; justify-content: space-between; font-size: 0.72rem; color: #94a3b8; }
+    .badge { background: #1e293b; color: #38bdf8; padding: 2px 6px; border-radius: 4px; }
+    #load-more-wrap { text-align: center; padding: 20px 0 40px; display: none; }
+    .btn {
+      background: #2563eb; color: #fff; border: none; padding: 8px 18px;
+      border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.9rem;
+    }
+    .btn-close { background: #dc2626; }
+
+    /* Player Overlay */
+    #player-overlay {
+      display: none; position: fixed; inset: 0; z-index: 100;
+      background: #000; flex-direction: column;
+    }
+    #player-bar {
+      background: #161b26; padding: 8px 16px; display: flex;
+      justify-content: space-between; align-items: center; border-bottom: 1px solid #262f40;
+    }
+    #game-frame { flex: 1; width: 100%; border: none; background: #000; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Study Hub</h1>
+  <div class="controls">
+    <input type="text" id="search" placeholder="Search all games..." oninput="applyFilters()">
+    <select id="source-filter" onchange="applyFilters()">
+      <option value="ALL">All Libraries</option>
+      <option value="GN-Math">GN-Math</option>
+      <option value="G+ Games">G+ Games</option>
+      <option value="3kh0">3kh0</option>
+    </select>
+    <span id="count">Loading...</span>
+  </div>
+</header>
+
+<div id="status">Loading game libraries directly from CDN...</div>
+<div class="grid" id="grid"></div>
+<div id="load-more-wrap">
+  <button class="btn" onclick="renderNextBatch()">Load More Games</button>
+</div>
+
+<div id="player-overlay">
+  <div id="player-bar">
+    <span id="active-title" style="font-weight: 600;">Game</span>
+    <div style="display:flex; gap:8px;">
+      <button class="btn" onclick="goFullscreen()">Fullscreen</button>
+      <button class="btn btn-close" onclick="closeGame()">Close</button>
+    </div>
+  </div>
+  <iframe id="game-frame" allowfullscreen></iframe>
+</div>
+
+<script>
+  function rev(s) { return s.split("").reverse().join(""); }
+  const P = "https" + String.fromCharCode(58, 47, 47);
+  const CDN = P + rev("ten.rviledsj.ndc") + "/gh/";
+  const RAW = P + rev("moc.tnetnocresubuhtig.war") + "/";
+  const GPLUS_WEB = P + rev("oi.buhtig.sulpgemagkcolbnu") + "/";
+
+  const GN_ZONES = CDN + "gn-math/assets@main/zones.json";
+  const GN_ZONES_RAW = RAW + "gn-math/assets/main/zones.json";
+  const GN_HTML = CDN + "gn-math/html@main";
+  const GN_COVER = CDN + "gn-math/covers@main";
+  const KH0_LITE = CDN + "3kh0/3kh0-lite@main/";
+
+  let allGames = [];
+  let filteredGames = [];
+  let renderedCount = 0;
+  const BATCH_SIZE = 100;
+  let currentBlobUrl = null;
+
+  async function fetchTextSafe(url) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return await res.text();
+    } catch (e) {}
+    return null;
+  }
+
+  async function fetchJsonSafe(url) {
+    const txt = await fetchTextSafe(url);
+    if (!txt) return null;
+    try { return JSON.parse(txt); } catch (e) { return null; }
+  }
+
+  window.onload = async function() {
+    const t = "?t=" + Date.now();
+    const seen = new Set();
+
+    function addGame(name, author, cover, url, source) {
+      if (!name || !url) return;
+      const cleanName = String(name).replace(/<[^>]*>/g, "").trim();
+      if (!cleanName || cleanName.length < 2) return;
+      const key = cleanName.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      allGames.push({ name: cleanName, author: author || source, cover: cover || "", url: url, source: source });
+    }
+
+    const [gnData, gpHtml, khData] = await Promise.all([
+      fetchJsonSafe(GN_ZONES + t).then(d => d || fetchJsonSafe(GN_ZONES_RAW + t)),
+      fetchTextSafe(GPLUS_WEB + "all-games.html" + t),
+      fetchJsonSafe(KH0_LITE + "config/games.json" + t)
+    ]);
+
+    // 1. Parse GN-Math
+    if (Array.isArray(gnData)) {
+      gnData.forEach(z => {
+        if (z && z.name && z.url && z.id !== -1) {
+          addGame(
+            z.name,
+            z.author || "GN-Math",
+            (z.cover || "").replace("{COVER_URL}", GN_COVER).replace("{HTML_URL}", GN_HTML),
+            z.url.replace("{COVER_URL}", GN_COVER).replace("{HTML_URL}", GN_HTML),
+            "GN-Math"
+          );
+        }
+      });
+    }
+
+    // 2. Parse G+ Games Directory
+    if (gpHtml) {
+      const doc = new DOMParser().parseFromString(gpHtml, "text/html");
+      doc.querySelectorAll("a[href]").forEach(a => {
+        const href = (a.getAttribute("href") || "").trim();
+        const text = (a.textContent || "").replace(/\s+/g, " ").trim();
+        if (
+          href &&
+          !href.startsWith("#") &&
+          !href.startsWith("http") &&
+          href !== "index.html" &&
+          href !== "all-games.html" &&
+          !href.includes("privacy") &&
+          !href.includes("terms") &&
+          !href.includes("dmca") &&
+          !href.includes("about") &&
+          !href.includes("contact") &&
+          !href.includes("category") &&
+          !text.includes("Back to") &&
+          !text.includes("Install")
+        ) {
+          const fullUrl = GPLUS_WEB + href.replace(/^\/+/, "");
+          const title = text.split("  ")[0].trim();
+          addGame(title, "G+ Games", "", fullUrl, "G+ Games");
+        }
+      });
+    }
+
+    // 3. Parse 3kh0-Lite
+    if (Array.isArray(khData)) {
+      khData.forEach(g => {
+        if (g && g.name && (g.link || g.root)) {
+          const path = g.link || (g.root + "/index.html");
+          const fullUrl = path.startsWith("http") ? path : KH0_LITE + path;
+          const imgUrl = g.img ? (g.img.startsWith("http") ? g.img : KH0_LITE + g.img) : "";
+          addGame(g.name, "3kh0", imgUrl, fullUrl, "3kh0");
+        }
+      });
+    }
+
+    const status = document.getElementById("status");
+    if (allGames.length === 0) {
+      status.innerText = "Could not load catalogs. Check your network connection.";
+      return;
+    }
+
+    allGames.sort((a, b) => a.name.localeCompare(b.name));
+    status.style.display = "none";
+    applyFilters();
+  };
+
+  function applyFilters() {
+    const query = document.getElementById("search").value.toLowerCase();
+    const src = document.getElementById("source-filter").value;
+
+    filteredGames = allGames.filter(g => {
+      const matchesName = g.name.toLowerCase().includes(query);
+      const matchesSrc = (src === "ALL" || g.source === src);
+      return matchesName && matchesSrc;
+    });
+
+    document.getElementById("count").innerText = filteredGames.length + " games";
+    document.getElementById("grid").innerHTML = "";
+    renderedCount = 0;
+    renderNextBatch();
+  }
+
+  function renderNextBatch() {
+    const grid = document.getElementById("grid");
+    const slice = filteredGames.slice(renderedCount, renderedCount + BATCH_SIZE);
+    const fragment = document.createDocumentFragment();
+
+    slice.forEach(game => {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.onclick = () => launchGame(game);
+
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.src = game.cover || makePlaceholder(game.name);
+      img.onerror = function() { this.src = makePlaceholder(game.name); };
+
+      const info = document.createElement("div");
+      info.className = "card-info";
+      info.innerHTML = `<div class="card-title">${escapeHtml(game.name)}</div>
+                        <div class="card-meta">
+                          <span>${escapeHtml(game.author)}</span>
+                          <span class="badge">${escapeHtml(game.source)}</span>
+                        </div>`;
+
+      card.appendChild(img);
+      card.appendChild(info);
+      fragment.appendChild(card);
+    });
+
+    grid.appendChild(fragment);
+    renderedCount += slice.length;
+    document.getElementById("load-more-wrap").style.display = renderedCount < filteredGames.length ? "block" : "none";
+  }
+
+  function makePlaceholder(title) {
+    const letter = escapeHtml((title || "?").charAt(0).toUpperCase());
+    return "data:image/svg+xml," + encodeURIComponent(
+<svg xmlns='http://w3.org' viewBox='0 0 100 100'><rect fill='#1e2534' width='100' height='100'/><text x='50' y='62' font-size='44' font-family='sans-serif' font-weight='bold' fill='#38bdf8' text-anchor='middle'>${letter}</text></svg>
+);
+}
+async function launchGame(game) {
+const overlay = document.getElementById("player-overlay");
+const frame = document.getElementById("game-frame");
+document.getElementById("active-title").innerText = "Loading " + game.name + "...";
+overlay.style.display = "flex";
+if (currentBlobUrl) {
+URL.revokeObjectURL(currentBlobUrl);
+currentBlobUrl = null;
+}
+try {
+const res = await fetch(game.url);
+if (!res.ok) throw new Error("HTTP " + res.status);
+let html = await res.text();
+// If this is a G+ game page, extract its inner embed iframe URL directly
+if (game.source === "G+ Games") {
+const doc = new DOMParser().parseFromString(html, "text/html");
+const iframe = doc.querySelector("iframe[src], iframe[data-src]");
+if (iframe) {
+let embedUrl = iframe.getAttribute("src") || iframe.getAttribute("data-src");
+if (!embedUrl.startsWith("http")) {
+embedUrl = GPLUS_WEB + embedUrl.replace(/^/+/, "");
+}
+document.getElementById("active-title").innerText = game.name;
+frame.src = embedUrl;
+return;
+}
+}
+const baseHref = game.url.substring(0, game.url.lastIndexOf("/") + 1);
+const baseTag = <base href="${baseHref}">;
+if (//i.test(html)) {
+html = html.replace(//i, "" + baseTag);
+} else {
+html = baseTag + html;
+}
+const blob = new Blob([html], { type: "text/html" });
+currentBlobUrl = URL.createObjectURL(blob);
+frame.src = currentBlobUrl;
+document.getElementById("active-title").innerText = game.name;
+} catch (err) {
+alert("Could not load " + game.name + ": " + err.message);
+closeGame();
+}
+}
+function closeGame() {
+const overlay = document.getElementById("player-overlay");
+const frame = document.getElementById("game-frame");
+frame.src = "about:blank";
+if (currentBlobUrl) {
+URL.revokeObjectURL(currentBlobUrl);
+currentBlobUrl = null;
+}
+overlay.style.display = "none";
+}
+function goFullscreen() {
+const frame = document.getElementById("game-frame");
+if (frame.requestFullscreen) frame.requestFullscreen();
+}
+function escapeHtml(str) {
+return String(str).replace(/[&<>"']/g, m => ({ '&':'&','<':'<','>':'>','"':'"',"'":''' }[m]));
+}
