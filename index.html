@@ -254,3 +254,86 @@
       card.onclick = () => launchGame(game);
 
       const img = document.createElement("img");
+img.loading = "lazy";
+img.src = game.cover || makePlaceholder(game.name);
+img.onerror = function() { this.src = makePlaceholder(game.name); };
+const info = document.createElement("div");
+info.className = "card-info";
+info.innerHTML = <div class="card-title">${escapeHtml(game.name)}</div> <div class="card-meta"> <span>${escapeHtml(game.author)}</span> <span class="badge">${escapeHtml(game.source)}</span> </div>;
+card.appendChild(img);
+card.appendChild(info);
+fragment.appendChild(card);
+});
+grid.appendChild(fragment);
+renderedCount += slice.length;
+document.getElementById("load-more-wrap").style.display = renderedCount < filteredGames.length ? "block" : "none";
+}
+function makePlaceholder(title) {
+const letter = escapeHtml((title || "?").charAt(0).toUpperCase());
+return "data:image/svg+xml," + encodeURIComponent(
+<svg xmlns='http://w3.org' viewBox='0 0 100 100'><rect fill='#1e2534' width='100' height='100'/><text x='50' y='62' font-size='44' font-family='sans-serif' font-weight='bold' fill='#38bdf8' text-anchor='middle'>${letter}</text></svg>
+);
+}
+async function launchGame(game) {
+const overlay = document.getElementById("player-overlay");
+const frame = document.getElementById("game-frame");
+document.getElementById("active-title").innerText = "Loading " + game.name + "...";
+overlay.style.display = "flex";
+if (currentBlobUrl) {
+URL.revokeObjectURL(currentBlobUrl);
+currentBlobUrl = null;
+}
+try {
+let html = await fetchTextTimed(game.url, 10000);
+if (!html && game.fallbackUrl) {
+html = await fetchTextTimed(game.fallbackUrl, 10000);
+}
+if (!html) throw new Error("Server blocked or timed out.");
+if (game.source === "G+ Games") {
+const doc = new DOMParser().parseFromString(html, "text/html");
+const iframe = doc.querySelector("iframe[src], iframe[data-src]");
+if (iframe) {
+let embedUrl = iframe.getAttribute("src") || iframe.getAttribute("data-src");
+if (!embedUrl.startsWith("http")) {
+embedUrl = GPLUS_WEB + embedUrl.replace(/^/+/, "");
+}
+document.getElementById("active-title").innerText = game.name;
+frame.src = embedUrl;
+return;
+}
+}
+const activeUrl = game.url;
+const baseHref = activeUrl.substring(0, activeUrl.lastIndexOf("/") + 1);
+const baseTag = <base href="${baseHref}">;
+if (//i.test(html)) {
+html = html.replace(//i, "" + baseTag);
+} else {
+html = baseTag + html;
+}
+const blob = new Blob([html], { type: "text/html" });
+currentBlobUrl = URL.createObjectURL(blob);
+frame.src = currentBlobUrl;
+document.getElementById("active-title").innerText = game.name;
+} catch (err) {
+alert("Could not load " + game.name + ": " + err.message);
+closeGame();
+}
+}
+function closeGame() {
+const overlay = document.getElementById("player-overlay");
+const frame = document.getElementById("game-frame");
+frame.src = "about:blank";
+if (currentBlobUrl) {
+URL.revokeObjectURL(currentBlobUrl);
+currentBlobUrl = null;
+}
+overlay.style.display = "none";
+}
+function goFullscreen() {
+const frame = document.getElementById("game-frame");
+if (frame.requestFullscreen) frame.requestFullscreen();
+}
+function escapeHtml(str) {
+return String(str).replace(/[&<>"']/g, m => ({ '&':'&','<':'<','>':'>','"':'"',"'":''' }[m]));
+}
+
